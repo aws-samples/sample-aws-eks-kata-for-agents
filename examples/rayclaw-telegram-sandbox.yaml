@@ -1,0 +1,125 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rayclaw-telegram-secrets
+  namespace: hermes
+type: Opaque
+stringData:
+  TELEGRAM_BOT_TOKEN: "YOUR_TELEGRAM_BOT_TOKEN"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rayclaw-telegram-config
+  namespace: hermes
+data:
+  rayclaw.config.yaml: |
+    llm_provider: "openai"
+    llm_base_url: "http://litellm.litellm.svc.cluster.local:4000"
+    api_key: "YOUR_LITELLM_API_KEY"
+    model: "claude-opus-4-6"
+    max_tokens: 8192
+
+    data_dir: "/data"
+    working_dir: "/data/workspace"
+    working_dir_isolation: "chat"
+    timezone: "Asia/Shanghai"
+
+    web_enabled: false
+
+    channels:
+      telegram:
+        bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
+  SOUL.md: |
+    You are an enterprise AI assistant connected to Telegram.
+    You can execute code, analyze data, and manage files.
+    Always respond in the same language as the user's message.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rayclaw-telegram-data
+  namespace: hermes
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: ebs-sc
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rayclaw-telegram-sandbox
+  namespace: hermes
+  labels:
+    app: hermes-sandbox
+    tenant: rayclaw-telegram
+    platform: telegram
+    runtime: rayclaw
+spec:
+  runtimeClassName: kata-clh
+  serviceAccountName: hermes-sandbox
+  nodeSelector:
+    katacontainers.io/kata-runtime: "true"
+  tolerations:
+    - key: kata
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  containers:
+    - name: rayclaw
+      image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/rayclaw:latest  # Replace with your ECR URI
+      env:
+        - name: RAYCLAW_CONFIG
+          value: "/data/rayclaw.config.yaml"
+        - name: RUST_LOG
+          value: "info"
+      envFrom:
+        - secretRef:
+            name: rayclaw-telegram-secrets
+      ports:
+        - containerPort: 10962
+          name: web
+          protocol: TCP
+      volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: config
+          mountPath: /data/rayclaw.config.yaml
+          subPath: rayclaw.config.yaml
+        - name: config
+          mountPath: /data/SOUL.md
+          subPath: SOUL.md
+      resources:
+        requests:
+          cpu: "500m"
+          memory: "256Mi"
+        limits:
+          cpu: "2"
+          memory: "1Gi"
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: rayclaw-telegram-data
+    - name: config
+      configMap:
+        name: rayclaw-telegram-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rayclaw-telegram-sandbox
+  namespace: hermes
+spec:
+  selector:
+    app: hermes-sandbox
+    tenant: rayclaw-telegram
+  ports:
+    - name: web
+      port: 10962
+      targetPort: 10962

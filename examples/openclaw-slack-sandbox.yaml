@@ -1,0 +1,138 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openclaw-slack-secrets
+  namespace: hermes
+type: Opaque
+stringData:
+  SLACK_BOT_TOKEN: "YOUR_SLACK_BOT_TOKEN"
+  SLACK_APP_TOKEN: "YOUR_SLACK_APP_TOKEN"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-slack-config
+  namespace: hermes
+data:
+  openclaw.json: |
+    {
+      "models": {
+        "mode": "replace",
+        "providers": {
+          "litellm": {
+            "baseUrl": "http://litellm.litellm.svc.cluster.local:4000",
+            "apiKey": "YOUR_LITELLM_API_KEY",
+            "models": {
+              "claude-opus-4-6": {
+                "contextWindow": 200000,
+                "maxTokens": 32000
+              }
+            }
+          }
+        },
+        "default": "litellm/claude-opus-4-6"
+      },
+      "channels": {
+        "slack": {
+          "enabled": true
+        }
+      },
+      "gateway": {
+        "mode": "local",
+        "port": 19001
+      }
+    }
+  SOUL.md: |
+    You are an enterprise AI assistant connected to Slack.
+    You can execute code, analyze data, and manage files.
+    Always respond in the same language as the user's message.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openclaw-slack-data
+  namespace: hermes
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: ebs-sc
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: openclaw-slack-sandbox
+  namespace: hermes
+  labels:
+    app: hermes-sandbox
+    tenant: openclaw-slack
+    platform: slack
+    runtime: openclaw
+spec:
+  runtimeClassName: kata-clh
+  serviceAccountName: hermes-sandbox
+  nodeSelector:
+    katacontainers.io/kata-runtime: "true"
+  tolerations:
+    - key: kata
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  containers:
+    - name: openclaw
+      image: ghcr.io/openclaw/openclaw:latest
+      args: ["node", "openclaw.mjs", "gateway", "--allow-unconfigured", "--bind", "lan"]
+      ports:
+        - containerPort: 19001
+          name: gateway
+          protocol: TCP
+      env:
+        - name: OPENCLAW_STATE_DIR
+          value: "/home/node/.openclaw"
+        - name: OPENCLAW_CONFIG_PATH
+          value: "/home/node/.openclaw/openclaw.json"
+      envFrom:
+        - secretRef:
+            name: openclaw-slack-secrets
+      volumeMounts:
+        - name: data
+          mountPath: /home/node/.openclaw
+        - name: config
+          mountPath: /home/node/.openclaw/openclaw.json
+          subPath: openclaw.json
+        - name: config
+          mountPath: /home/node/.openclaw/SOUL.md
+          subPath: SOUL.md
+      resources:
+        requests:
+          cpu: "1"
+          memory: "1Gi"
+        limits:
+          cpu: "2"
+          memory: "2Gi"
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: openclaw-slack-data
+    - name: config
+      configMap:
+        name: openclaw-slack-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw-slack-sandbox
+  namespace: hermes
+spec:
+  selector:
+    app: hermes-sandbox
+    tenant: openclaw-slack
+  ports:
+    - name: gateway
+      port: 19001
+      targetPort: 19001

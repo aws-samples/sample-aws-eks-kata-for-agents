@@ -1,0 +1,128 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rayclaw-feishu-secrets
+  namespace: hermes
+type: Opaque
+stringData:
+  FEISHU_APP_ID: "YOUR_FEISHU_APP_ID"
+  FEISHU_APP_SECRET: "YOUR_FEISHU_APP_SECRET"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rayclaw-feishu-config
+  namespace: hermes
+data:
+  rayclaw.config.yaml: |
+    llm_provider: "openai"
+    llm_base_url: "http://litellm.litellm.svc.cluster.local:4000"
+    api_key: "YOUR_LITELLM_API_KEY"
+    model: "claude-opus-4-6"
+    max_tokens: 8192
+
+    data_dir: "/data"
+    working_dir: "/data/workspace"
+    working_dir_isolation: "chat"
+    timezone: "Asia/Shanghai"
+
+    web_enabled: false
+
+    channels:
+      feishu:
+        app_id: "YOUR_FEISHU_APP_ID"
+        app_secret: "YOUR_FEISHU_APP_SECRET"
+        connection_mode: "websocket"
+  SOUL.md: |
+    You are an enterprise AI assistant connected to Feishu.
+    You can execute code, analyze data, and manage files.
+    Always respond in the same language as the user's message.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rayclaw-feishu-data
+  namespace: hermes
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: ebs-sc
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rayclaw-feishu-sandbox
+  namespace: hermes
+  labels:
+    app: hermes-sandbox
+    tenant: rayclaw-feishu
+    platform: feishu
+    runtime: rayclaw
+spec:
+  runtimeClassName: kata-clh
+  serviceAccountName: hermes-sandbox
+  nodeSelector:
+    katacontainers.io/kata-runtime: "true"
+  tolerations:
+    - key: kata
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  containers:
+    - name: rayclaw
+      image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/rayclaw:latest  # Replace with your ECR URI
+      env:
+        - name: RAYCLAW_CONFIG
+          value: "/data/rayclaw.config.yaml"
+        - name: RUST_LOG
+          value: "info"
+      envFrom:
+        - secretRef:
+            name: rayclaw-feishu-secrets
+      ports:
+        - containerPort: 10962
+          name: web
+          protocol: TCP
+      volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: config
+          mountPath: /data/rayclaw.config.yaml
+          subPath: rayclaw.config.yaml
+        - name: config
+          mountPath: /data/SOUL.md
+          subPath: SOUL.md
+      resources:
+        requests:
+          cpu: "500m"
+          memory: "256Mi"
+        limits:
+          cpu: "2"
+          memory: "1Gi"
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: rayclaw-feishu-data
+    - name: config
+      configMap:
+        name: rayclaw-feishu-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rayclaw-feishu-sandbox
+  namespace: hermes
+spec:
+  selector:
+    app: hermes-sandbox
+    tenant: rayclaw-feishu
+  ports:
+    - name: web
+      port: 10962
+      targetPort: 10962

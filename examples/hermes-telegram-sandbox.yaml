@@ -1,0 +1,145 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hermes-telegram-secrets
+  namespace: hermes
+type: Opaque
+stringData:
+  TELEGRAM_BOT_TOKEN: "YOUR_TELEGRAM_BOT_TOKEN"
+  API_SERVER_KEY: "YOUR_API_SERVER_KEY"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hermes-telegram-config
+  namespace: hermes
+data:
+  config.yaml: |
+    model:
+      default: "claude-opus-4-6"
+      provider: "custom"
+      base_url: "http://litellm.litellm.svc.cluster.local:4000"
+      api_key: "YOUR_LITELLM_API_KEY"
+    terminal:
+      backend: "local"
+      timeout: 180
+    compression:
+      enabled: true
+      threshold: 0.50
+  SOUL.md: |
+    You are an enterprise AI assistant connected to Telegram.
+    You can execute code, analyze data, and manage files.
+    Always follow security best practices.
+  .env: |
+    TELEGRAM_BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
+    API_SERVER_KEY=YOUR_API_SERVER_KEY
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hermes-telegram-data
+  namespace: hermes
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: ebs-sc
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hermes-telegram-sandbox
+  namespace: hermes
+  labels:
+    app: hermes-sandbox
+    tenant: telegram-team
+    platform: telegram
+spec:
+  runtimeClassName: kata-clh
+  serviceAccountName: hermes-sandbox
+  nodeSelector:
+    katacontainers.io/kata-runtime: "true"
+  tolerations:
+    - key: kata
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  containers:
+    - name: hermes
+      image: nousresearch/hermes-agent:latest
+      args: ["gateway", "run"]
+      ports:
+        - containerPort: 8642
+          name: api
+          protocol: TCP
+        - containerPort: 9119
+          name: dashboard
+          protocol: TCP
+      env:
+        - name: HERMES_UID
+          value: "10000"
+        - name: HERMES_GID
+          value: "10000"
+      envFrom:
+        - secretRef:
+            name: hermes-telegram-secrets
+      volumeMounts:
+        - name: data
+          mountPath: /opt/data
+        - name: config
+          mountPath: /opt/data/config.yaml
+          subPath: config.yaml
+        - name: config
+          mountPath: /opt/data/SOUL.md
+          subPath: SOUL.md
+        - name: config
+          mountPath: /opt/data/.env
+          subPath: .env
+      resources:
+        requests:
+          cpu: "1"
+          memory: "1Gi"
+        limits:
+          cpu: "2"
+          memory: "2Gi"
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: 8642
+        initialDelaySeconds: 30
+        periodSeconds: 10
+      readinessProbe:
+        httpGet:
+          path: /health
+          port: 8642
+        initialDelaySeconds: 10
+        periodSeconds: 5
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: hermes-telegram-data
+    - name: config
+      configMap:
+        name: hermes-telegram-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermes-telegram-sandbox
+  namespace: hermes
+spec:
+  selector:
+    app: hermes-sandbox
+    tenant: telegram-team
+  ports:
+    - name: api
+      port: 8642
+      targetPort: 8642
+    - name: dashboard
+      port: 9119
+      targetPort: 9119
