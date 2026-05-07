@@ -11,8 +11,8 @@ Supports **multi-agent-runtime, multi-tenant** deployment — run Hermes Agent, 
 │                   Amazon EKS                         │
 │                                                      │
 │  ┌──────────────┐  ┌──────────────────────────────┐ │
-│  │  Core Nodes   │  │  Bare Metal Nodes (Karpenter)│ │
-│  │  (m5.xlarge)  │  │  (c8i/m8i, nested KVM)      │ │
+│  │  Core Nodes   │  │  Kata Nodes (EKS MNG)        │ │
+│  │  (m5.xlarge)  │  │  (m8i, nested KVM enabled)   │ │
 │  │               │  │                              │ │
 │  │  LiteLLM      │  │  ┌────────────────────────┐ │ │
 │  │  Prometheus   │  │  │  Kata VM (CLH/QEMU)    │ │ │
@@ -43,7 +43,8 @@ Supports **multi-agent-runtime, multi-tenant** deployment — run Hermes Agent, 
 | Component | Purpose |
 |---|---|
 | **EKS** | Managed Kubernetes control plane |
-| **Karpenter** | Auto-provision c8i/m8i nodes with nested KVM for Kata VMs |
+| **Karpenter** | Auto-provision nodes for general workloads |
+| **EKS Managed Node Group** | Kata nodes with nested KVM (c8i/m8i/r8i) or bare-metal instances |
 | **Kata Containers** | VM-level isolation per sandbox pod (QEMU + CLH) |
 | **LiteLLM** | Unified model gateway (Bedrock, SiliconFlow, etc.) |
 | **Hermes Agent** | AI agent with multi-platform messaging (gateway run) |
@@ -87,6 +88,29 @@ Custom region/name:
 ```bash
 ./install.sh --region ap-southeast-1 --cluster-name my-hermes
 ```
+
+### Kata Node Modes
+
+The Kata worker nodes support two modes for hardware virtualization:
+
+| Mode | Instance Types | How KVM is Provided |
+|------|---------------|-------------------|
+| `nested-kvm` (default) | m8i, c8i, r8i families | `CpuOptions.NestedVirtualization=enabled` at launch |
+| `bare-metal` | *.metal instances | Native `/dev/kvm` on bare metal |
+
+```bash
+# Default: m8i instances with nested KVM enabled
+./install.sh --kata-mode nested-kvm
+
+# Use specific 8i instance types
+./install.sh --kata-mode nested-kvm --kata-instance-types c8i.4xlarge,c8i.8xlarge
+
+# Bare metal instances (native KVM, no nested virt needed)
+./install.sh --kata-mode bare-metal --kata-instance-types m5.metal
+```
+
+> **Note:** Karpenter does not support `CpuOptions.NestedVirtualization`. Kata nodes are
+> provisioned as an EKS Managed Node Group with a launch template created via AWS CLI.
 
 ### Generate LiteLLM API Key
 
@@ -203,13 +227,20 @@ spec:
   runtimeClassName: kata-clh    # or kata-qemu
 ```
 
-Or set default at deploy time:
-
-```bash
-./install.sh --region us-west-2 --cluster-name my-hermes
-```
-
 See [docs/isolation-backends-analysis.md](docs/isolation-backends-analysis.md) for detailed comparison including Firecracker and gVisor.
+
+### Kata Networking Limitations
+
+Kata VMs on EKS with VPC CNI have specific networking constraints:
+
+- **ClusterIP unreachable** — Kata VMs cannot access Kubernetes Service ClusterIPs (kube-proxy iptables rules don't apply to VM tap traffic)
+- **NodePort unreachable** — Same reason as ClusterIP
+- **Pod-to-pod via Pod IP** — Only works within the same security group
+
+**Workarounds applied in this project:**
+- DNS: Pods use VPC DNS (`dnsPolicy: None` + VPC CIDR base+2) instead of CoreDNS ClusterIP
+- LiteLLM: Exposed via `hostPort` on core nodes; Kata pods access it via node IP
+- Security groups: A rule allows traffic from Kata nodes (cluster primary SG) to core nodes (node SG)
 
 ## Monitoring
 
@@ -237,7 +268,8 @@ kubectl port-forward -n monitoring svc/grafana 3000:80
 ├── versions.tf              # Terraform/provider versions
 ├── vpc.tf                   # VPC with public/private subnets
 ├── eks.tf                   # EKS cluster and core node group
-├── karpenter.tf             # Karpenter + nested KVM NodePool (c8i/m8i)
+├── karpenter.tf             # Karpenter for general workloads
+├── kata-nodegroup.tf        # Kata EKS Managed Node Group (nested-kvm / bare-metal)
 ├── kata.tf                  # Namespaces (kata-system, hermes)
 ├── kata-deploy.tf           # Kata Containers Helm release
 ├── litellm.tf               # LiteLLM proxy + Bedrock IAM
