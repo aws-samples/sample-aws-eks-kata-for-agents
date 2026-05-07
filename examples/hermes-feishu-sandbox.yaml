@@ -20,7 +20,7 @@ data:
     model:
       default: "claude-opus-4-6"
       provider: "custom"
-      base_url: "http://litellm.litellm.svc.cluster.local:4000"
+      base_url: "http://${LITELLM_HOST}:4000"
       api_key: "YOUR_LITELLM_API_KEY"
     terminal:
       backend: "local"
@@ -28,6 +28,8 @@ data:
     compression:
       enabled: true
       threshold: 0.50
+    approvals:
+      mode: "off"
   SOUL.md: |
     You are an enterprise AI assistant connected to Feishu.
     You can execute code, analyze data, and manage files.
@@ -36,6 +38,7 @@ data:
     FEISHU_APP_ID=YOUR_FEISHU_APP_ID
     FEISHU_APP_SECRET=YOUR_FEISHU_APP_SECRET
     API_SERVER_KEY=YOUR_API_SERVER_KEY
+    GATEWAY_ALLOW_ALL_USERS=true
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -68,10 +71,27 @@ spec:
       operator: Equal
       value: "true"
       effect: NoSchedule
+  dnsPolicy: None
+  dnsConfig:
+    nameservers:
+      - "10.1.0.2"  # VPC DNS (VPC CIDR base + 2). Kata VMs cannot reach ClusterIP.
+    searches:
+      - "hermes.svc.cluster.local"
+      - "svc.cluster.local"
+      - "cluster.local"
+    options:
+      - name: ndots
+        value: "5"
   containers:
     - name: hermes
       image: nousresearch/hermes-agent:latest
-      args: ["gateway", "run"]
+      command: ["sh", "-c"]
+      args:
+        - |
+          sed "s|\${LITELLM_HOST}|${LITELLM_HOST}|g" /config-template/config.yaml > /opt/data/config.yaml
+          cp /config-template/SOUL.md /opt/data/SOUL.md
+          cp /config-template/.env /opt/data/.env
+          exec /opt/hermes/docker/entrypoint.sh gateway run
       ports:
         - containerPort: 8642
           name: api
@@ -84,6 +104,15 @@ spec:
           value: "10000"
         - name: HERMES_GID
           value: "10000"
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: LITELLM_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: kata-network-config
+              key: litellm_host
       envFrom:
         - secretRef:
             name: hermes-feishu-secrets
@@ -91,33 +120,20 @@ spec:
         - name: data
           mountPath: /opt/data
         - name: config
-          mountPath: /opt/data/config.yaml
-          subPath: config.yaml
-        - name: config
-          mountPath: /opt/data/SOUL.md
-          subPath: SOUL.md
-        - name: config
-          mountPath: /opt/data/.env
-          subPath: .env
+          mountPath: /config-template
       resources:
         requests:
           cpu: "1"
-          memory: "1Gi"
-        limits:
-          cpu: "2"
           memory: "2Gi"
+        limits:
+          cpu: "4"
+          memory: "8Gi"
       livenessProbe:
-        httpGet:
-          path: /health
-          port: 8642
-        initialDelaySeconds: 30
-        periodSeconds: 10
-      readinessProbe:
-        httpGet:
-          path: /health
-          port: 8642
-        initialDelaySeconds: 10
-        periodSeconds: 5
+        exec:
+          command: ["pgrep", "-f", "hermes"]
+        initialDelaySeconds: 60
+        periodSeconds: 30
+        failureThreshold: 5
       securityContext:
         runAsUser: 0
         runAsGroup: 0

@@ -146,3 +146,20 @@ resource "helm_release" "litellm" {
     kubernetes_storage_class_v1.ebs_csi_default
   ]
 }
+
+# Expose LiteLLM on hostPort so Kata pods (which cannot access ClusterIP) can
+# reach it via the node IP directly.
+resource "null_resource" "litellm_hostport_patch" {
+  triggers = {
+    litellm_release = helm_release.litellm.metadata[0].revision
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      kubectl patch deployment litellm -n litellm --type='json' \
+        -p='[{"op":"add","path":"/spec/template/spec/containers/0/ports/0/hostPort","value":4000}]'
+    EOT
+  }
+
+  depends_on = [helm_release.litellm]
+}
