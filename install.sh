@@ -4,6 +4,31 @@ set -e
 
 REGION="us-west-2"
 CLUSTER_NAME="hermes-kata-eks"
+KATA_MODE="nested-kvm"
+KATA_INSTANCE_TYPES=""
+
+show_usage() {
+  cat <<EOF
+Usage: $0 [OPTIONS]
+
+Options:
+  --region REGION             AWS region (default: us-west-2)
+  --cluster-name NAME         EKS cluster name (default: hermes-kata-eks)
+  --kata-mode MODE            Kata node mode: nested-kvm or bare-metal (default: nested-kvm)
+                                nested-kvm: Uses c8i/m8i/r8i instances with NestedVirtualization=enabled
+                                bare-metal: Uses *.metal instances with native /dev/kvm
+  --kata-instance-types TYPES Comma-separated instance types (default depends on mode)
+                                nested-kvm default: m8i.2xlarge,m8i.4xlarge
+                                bare-metal default: m5.metal,m5n.metal
+  --help                      Show this help message
+
+Examples:
+  $0 --kata-mode nested-kvm
+  $0 --kata-mode nested-kvm --kata-instance-types c8i.4xlarge,c8i.8xlarge
+  $0 --kata-mode bare-metal --kata-instance-types m5.metal
+EOF
+  exit 0
+}
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -15,19 +40,44 @@ while [[ $# -gt 0 ]]; do
       CLUSTER_NAME="$2"
       shift 2
       ;;
+    --kata-mode)
+      KATA_MODE="$2"
+      if [[ "$KATA_MODE" != "nested-kvm" && "$KATA_MODE" != "bare-metal" ]]; then
+        echo "ERROR: --kata-mode must be 'nested-kvm' or 'bare-metal'"
+        exit 1
+      fi
+      shift 2
+      ;;
+    --kata-instance-types)
+      KATA_INSTANCE_TYPES="$2"
+      shift 2
+      ;;
+    --help|-h)
+      show_usage
+      ;;
     *)
       echo "Unknown option: $1"
-      echo "Usage: $0 [--region REGION] [--cluster-name CLUSTER_NAME]"
-      exit 1
+      show_usage
       ;;
   esac
 done
 
+# Set default instance types based on mode if not explicitly provided
+if [[ -z "$KATA_INSTANCE_TYPES" ]]; then
+  if [[ "$KATA_MODE" == "nested-kvm" ]]; then
+    KATA_INSTANCE_TYPES="m8i.2xlarge,m8i.4xlarge"
+  else
+    KATA_INSTANCE_TYPES="m5.metal,m5n.metal"
+  fi
+fi
+
 echo "============================================"
 echo "  Hermes Agent on EKS - Deployment Script"
 echo "============================================"
-echo "Region:       $REGION"
-echo "Cluster Name: $CLUSTER_NAME"
+echo "Region:         $REGION"
+echo "Cluster Name:   $CLUSTER_NAME"
+echo "Kata Mode:      $KATA_MODE"
+echo "Instance Types: $KATA_INSTANCE_TYPES"
 echo "============================================"
 
 # Auto-install prerequisites if missing
@@ -109,6 +159,50 @@ for cmd in aws kubectl terraform helm; do
   echo "  $cmd: $($cmd version --client 2>/dev/null || $cmd --version 2>/dev/null | head -1)"
 done
 
+# Convert comma-separated instance types to Terraform list format
+IFS=',' read -ra INSTANCE_TYPE_ARRAY <<< "$KATA_INSTANCE_TYPES"
+TF_INSTANCE_TYPES=$(printf '"%s",' "${INSTANCE_TYPE_ARRAY[@]}")
+TF_INSTANCE_TYPES="[${TF_INSTANCE_TYPES%,}]"
+
+# Pre-create launch template for nested-kvm mode via AWS CLI.
+# Terraform AWS provider 5.x and CloudFormation do not support
+# CpuOptions.NestedVirtualization — only the EC2 API does directly.
+LT_NAME="${CLUSTER_NAME}-kata-nested-kvm"
+
+if [[ "$KATA_MODE" == "nested-kvm" ]]; then
+  echo ""
+  echo ">>> Creating launch template with NestedVirtualization=enabled..."
+  if aws ec2 describe-launch-templates --region "$REGION" \
+    --launch-template-names "$LT_NAME" &>/dev/null; then
+    echo "  Launch template '$LT_NAME' already exists, skipping creation."
+  else
+    aws ec2 create-launch-template \
+      --region "$REGION" \
+      --launch-template-name "$LT_NAME" \
+      --launch-template-data '{
+        "BlockDeviceMappings": [{
+          "DeviceName": "/dev/xvda",
+          "Ebs": {
+            "VolumeSize": 100,
+            "VolumeType": "gp3",
+            "Encrypted": true,
+            "DeleteOnTermination": true
+          }
+        }],
+        "CpuOptions": {
+          "NestedVirtualization": "enabled"
+        },
+        "MetadataOptions": {
+          "HttpEndpoint": "enabled",
+          "HttpTokens": "required",
+          "HttpPutResponseHopLimit": 2
+        }
+      }' \
+      --tag-specifications "ResourceType=launch-template,Tags=[{Key=Blueprint,Value=${CLUSTER_NAME}},{Key=Workload,Value=hermes-kata}]"
+    echo "  Launch template '$LT_NAME' created successfully."
+  fi
+fi
+
 # Terraform init
 echo ""
 echo ">>> Initializing Terraform..."
@@ -120,6 +214,8 @@ echo ">>> Planning infrastructure..."
 terraform plan \
   -var="region=$REGION" \
   -var="name=$CLUSTER_NAME" \
+  -var="kata_node_mode=$KATA_MODE" \
+  -var="kata_instance_types=$TF_INSTANCE_TYPES" \
   -out=tfplan
 
 # Confirm

@@ -93,9 +93,18 @@ terraform destroy \
       -auto-approve
   }
 
-# Step 5: Clean up local files
+# Step 5: Delete the nested-kvm launch template (created outside Terraform)
 echo ""
-echo ">>> Step 5: Cleaning up local files..."
+echo ">>> Step 5: Deleting nested-kvm launch template..."
+LT_NAME="${CLUSTER_NAME}-kata-nested-kvm"
+aws ec2 delete-launch-template --region "$REGION" \
+  --launch-template-name "$LT_NAME" 2>/dev/null \
+  && echo "  Launch template '$LT_NAME' deleted." \
+  || echo "  Launch template '$LT_NAME' not found or already deleted."
+
+# Step 6: Clean up local files
+echo ""
+echo ">>> Step 6: Cleaning up local files..."
 rm -f tfplan
 rm -f terraform.tfstate.*.backup
 

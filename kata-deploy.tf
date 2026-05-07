@@ -36,6 +36,6 @@ resource "helm_release" "kata_deploy" {
 
   depends_on = [
     kubernetes_namespace_v1.kata_system,
-    kubectl_manifest.kata_node_pool,
+    module.eks_kata_node_group,
   ]
 }

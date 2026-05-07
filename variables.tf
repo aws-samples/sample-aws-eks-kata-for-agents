@@ -33,10 +33,39 @@ variable "kata_hypervisor" {
   }
 }
 
+variable "kata_node_mode" {
+  description = "Kata node provisioning mode: nested-kvm (8i instances with NestedVirtualization) or bare-metal (.metal instances with native KVM)"
+  type        = string
+  default     = "nested-kvm"
+
+  validation {
+    condition     = contains(["nested-kvm", "bare-metal"], var.kata_node_mode)
+    error_message = "kata_node_mode must be one of: nested-kvm, bare-metal"
+  }
+}
+
 variable "kata_instance_types" {
-  description = "Instance types for Kata nodes (must support nested KVM: c8i, m8i, r8i families)"
+  description = "Instance types for Kata nodes. For nested-kvm: c8i/m8i/r8i families. For bare-metal: *.metal instances."
   type        = list(string)
-  default     = ["c8i.2xlarge", "c8i.4xlarge", "m8i.2xlarge", "m8i.4xlarge"]
+  default     = ["m8i.2xlarge", "m8i.4xlarge"]
+}
+
+variable "kata_node_min_size" {
+  description = "Minimum number of Kata nodes"
+  type        = number
+  default     = 1
+}
+
+variable "kata_node_max_size" {
+  description = "Maximum number of Kata nodes"
+  type        = number
+  default     = 6
+}
+
+variable "kata_node_desired_size" {
+  description = "Desired number of Kata nodes"
+  type        = number
+  default     = 2
 }
 
 variable "is_china_region" {
