@@ -89,6 +89,23 @@ Custom region/name:
 ./install.sh --region ap-southeast-1 --cluster-name my-hermes
 ```
 
+### Parameters
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `--region` | AWS region | `us-west-2` |
+| `--cluster-name` | EKS cluster name | `hermes-kata-eks` |
+| `--kata-mode` | Kata node mode: `nested-kvm` or `bare-metal` | `nested-kvm` |
+| `--kata-instance-types` | Comma-separated instance types for Kata nodes | `m8i.2xlarge,m8i.4xlarge` |
+| `--help` | Show usage and examples | — |
+
+```bash
+./install.sh --kata-mode nested-kvm                        # Default: 8i instances with nested KVM
+./install.sh --kata-mode bare-metal                        # Bare metal instances (native /dev/kvm)
+./install.sh --kata-mode nested-kvm --kata-instance-types c8i.4xlarge,c8i.8xlarge
+./install.sh --help                                        # Show all options
+```
+
 ### Kata Node Modes
 
 The Kata worker nodes support two modes for hardware virtualization:
