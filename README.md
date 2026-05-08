@@ -256,7 +256,7 @@ Kata VMs on EKS with VPC CNI have specific networking constraints:
 
 **Workarounds applied in this project:**
 - DNS: Pods use VPC DNS (`dnsPolicy: None` + VPC CIDR base+2) instead of CoreDNS ClusterIP
-- LiteLLM: Exposed via `hostPort` on core nodes; Kata pods access it via node IP
+- LiteLLM: Exposed via Internal NLB (cross-zone enabled); Kata pods access it via NLB DNS hostname
 - Security groups: A rule allows traffic from Kata nodes (cluster primary SG) to core nodes (node SG)
 
 ## Monitoring

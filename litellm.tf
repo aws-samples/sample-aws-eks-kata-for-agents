@@ -147,19 +147,51 @@ resource "helm_release" "litellm" {
   ]
 }
 
-# Expose LiteLLM on hostPort so Kata pods (which cannot access ClusterIP) can
-# reach it via the node IP directly.
-resource "null_resource" "litellm_hostport_patch" {
-  triggers = {
-    litellm_release = helm_release.litellm.metadata[0].revision
+# Internal NLB for LiteLLM — Kata VMs cannot access ClusterIP (kube-proxy
+# iptables don't apply to VM tap traffic), but can reach NLB via VPC routing.
+resource "kubernetes_service_v1" "litellm_nlb" {
+  metadata {
+    name      = "litellm-nlb"
+    namespace = kubernetes_namespace_v1.litellm.metadata[0].name
+    annotations = {
+      "service.beta.kubernetes.io/aws-load-balancer-type"            = "external"
+      "service.beta.kubernetes.io/aws-load-balancer-nlb-target-type" = "ip"
+      "service.beta.kubernetes.io/aws-load-balancer-scheme"          = "internal"
+      "service.beta.kubernetes.io/aws-load-balancer-attributes"      = "load_balancing.cross_zone.enabled=true"
+    }
   }
 
-  provisioner "local-exec" {
-    command = <<-EOT
-      kubectl patch deployment litellm -n litellm --type='json' \
-        -p='[{"op":"add","path":"/spec/template/spec/containers/0/ports/0/hostPort","value":4000}]'
-    EOT
+  spec {
+    type                = "LoadBalancer"
+    load_balancer_class = "service.k8s.aws/nlb"
+    selector = {
+      "app.kubernetes.io/name" = "litellm"
+    }
+    port {
+      name        = "http"
+      port        = 4000
+      target_port = 4000
+      protocol    = "TCP"
+    }
   }
 
   depends_on = [helm_release.litellm]
+}
+
+locals {
+  litellm_nlb_host = kubernetes_service_v1.litellm_nlb.status[0].load_balancer[0].ingress[0].hostname
+}
+
+# ConfigMap with LiteLLM NLB endpoint for Kata pods
+resource "kubernetes_config_map_v1" "kata_network_config" {
+  metadata {
+    name      = "kata-network-config"
+    namespace = local.hermes_namespace
+  }
+
+  data = {
+    litellm_host = local.litellm_nlb_host
+  }
+
+  depends_on = [kubernetes_namespace_v1.hermes]
 }
